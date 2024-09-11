@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+  <!-- Basic Page Needs
+  –––––––––––––––––––––––––––––––––––––––––––––––––– -->
+  <meta charset="utf-8">
+  <title>TCM PMAT Course Final Report: Analysis of WannaCry.exe ransowmare</title>
+  <meta name="description" content="">
+  <meta name="author" content="">
+
+  <!-- Mobile Specific Metas
+  –––––––––––––––––––––––––––––––––––––––––––––––––– -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- FONT
+  –––––––––––––––––––––––––––––––––––––––––––––––––– -->
+  <link href="//fonts.googleapis.com/css?family=Raleway:400,300,600" rel="stylesheet" type="text/css">
+
+  <!-- CSS
+  –––––––––––––––––––––––––––––––––––––––––––––––––– -->
+  <link rel="stylesheet" href="css/normalize.css">
+  <link rel="stylesheet" href="css/skeleton.css">
+  <link rel="stylesheet" href="css/custom.css?v=12">
+
+  <!-- Favicon
+  –––––––––––––––––––––––––––––––––––––––––––––––––– -->
+  <link rel="icon" type="image/png" href="images/favicon.png">
+
+</head>
+<body>
+
+  <!-- Primary Page Layout
+  –––––––––––––––––––––––––––––––––––––––––––––––––– -->
+  <div class="container">
+      <div class="row" style="margin-top: 5%">
+        <div class="twelve columns">
+            <h2>TCM PMAT Course Final Report:<br /> Analysis of WannaCry.exe ransowmare</h2>
+            <p>This report is a course final for TCM Security's PMAT course. Like many other parcitipants, I also chose WannaCry, because it was the final big malware to analyze as a challenge in the course, and I had fun during the process. I highly recommend the Practical Malware Analysis and Triage (PMAT) course for anyone interested in malware analysis: <a href="https://academy.tcm-sec.com/p/practical-malware-analysis-triage">https://academy.tcm-sec.com/p/practical-malware-analysis-triage</a></p>
+
+            <p>In this report, I'll dig into WannaCry ransomware through basic static and basic dynamic analysis, following with advanced static and advanced dynamic analysis. The focus is in following the methodology taught in the course. General behavior of this malware will only be analyzed, meaning that we'll leave out deeper topics like how the file encryption was implement or how the malware spreads around or communicates.<br />
+            I acknowledge that these are topics that should be covered in a professional malware analysis report.</p>
+
+            <h2>Basic Static Analysis</h2>
+            <h5>Strings</h5>
+            <p>For string analysis I used FLOSS which is a neat open source tool built in FlareVM</p>
+            <p>One of the first things that come up with a quick floss lookup is the URL with a long domain name. Other interesting things we can see right above the URL are path names with string replacements (<code>%s</code>) and a filename <code>tasksche.exe</code>.<br />
+            Additionally the <code>!This program cannot be run in DOS mode.</code> line pops up multiple times in the strings output, giving us a hint that there are multiple executables that are being unpacked at some point.<br />
+            <img src="01_floss_uri.png" border="1" /></p>
+            <p>Moving forward, we can also find <code>cmd.exe</code>, <code>icacls</code> and <code>attrib +h</code> hinting us about command execution, privilege escalation and hiding files.<br />
+            <img src="02_floss_dir_privesc.png" border="1" /></p>
+            <h5>PEView</h5>
+
+            <p>PEView is a handy tool for quick Portable Executable analysis.
+            From raw data, we can verify that there is the magic byte <code>MZ</code> at the beginning of the file, verifying us that this is indeed a portable executable.
+            <img src="03_2_peview_mz.png" border="1" /><br />
+
+            We can also take a look at the diffences between Virtual Size and Size of Raw Data.
+            <img src="03_peview_size_dif.png" border="1" /><<br />
+            After converting both values from HEX to DEC, we can see that there's a small size difference between the two, hinting that something small is being unpacked.
+<pre><code>➜  ~  echo $((16#00008BCA))
+35786
+➜  ~  echo $((16#00009000))
+36864</code></pre></p>
+            <h5>PEStudio</h5>
+            <p>With PEStudio, we can do more deeper PE analysis. Let's look at the imports, because there are a lot of them flagged.<br />
+            <img src="04_pestudio_imports.png" border="1" /></p>
+            <p>Some WinAPI calls in interest are for example:<br />
+            <code>InternetOpenA</code> and <code>InternetOpenUrlA</code><br />
+            Common for C2 communications. In this case, we can anticipate that this is possibly used for the long URL we saw in the strings output earlier.<br /><br />
+            <code>CreateServiceA</code> and <code>ChangeServiceConfig2A</code><br />
+            Along with other service interraction commands, it seems a lot like the malware creates a persistent service.<br /><br />
+            <code>CryptGenRandom</code> and <code>CryptAcquireContextA</code><br />
+            API calls used for cryptography.
+            </p>
+            <p><a href="https://malapi.io/">MalAPI.io</a> is a handy tool to check these in more detail.</p>
+            <p>Additionally, there are lots of calls for WinSocket DLL (close, receive, send, etc), so it seems likely that the executable is opening ports and attempting connections to various ports.</p>
+            <h5>CAPA</h5>
+            <p>Capa output with MITRE ATT&amp;CK references added just as a bonus.
+            <img src="05_capa.png" border="1" /></p>
+
+            <h2>Basic Dynamic Analysis</h2>
+            <h5>First run (with internet simulation enabled)</h5>
+            <p>The first run for wannacry with internet simulation enabled does nothing. Looking into Wireshark, we can see that there is a HTTP 200 OK response returned from inetsim to a GET request for the long URL we saw from strings output earlier:
+            <img src="06_wireshark_200.png" border="1" /></p>
+            <p>After shutting down inetsim, we can finally get the malware running successfully on our lab machine. Local admin rights are still required to run the executable.
+            <img src="17_run_wannacry.png" border="1" /></p>
+            <p>Some of the visible symptoms we can start see shortly after execution:
+            <ul>
+                <li>Desktop file icons change and, for example, there's no image viewer found to open jpeg files when trying to open them.</li>
+                <li><code>@WanaDecryptor.exe</code> file appears on desktop along with <code>@Please_read_me.txt</code>.</li>
+                <li>Background image changes and a popup window appears with instructions to send bitcoin.</li>
+                <li>Files on desktop get renamed with a <code>.WNCRY</code> extension.</li>
+                <li>Gradually the operating system becomes almost impossible to use, because files or programs cannot be opened anymore.</li>
+            </ul></p>
+
+            <h3>Host-based indicators</h3>
+            <p>We'll use procmon to analyze host-based indicators.</p>
+            <p>When filtering with File operations in procmon we can see that <code>wannacry.exe</code> creates a file with a name <code>taskche.exe</code>.
+            <img src="07_procmon_taskche_filecreate.png" border="1" /></p>
+
+            <p>Looking into process tree with procmon, we can see that <code>wannacry.exe</code> has spawned a child process <code>tasksche.exe</code>.
+            <img src="09_procmon_process_tree.png" border="1" /></p>
+
+            <p>When filtering in procmon with the PID of the child-process, we can see where everything was unpacked on the file system.
+            <img src="10_procmon_unpack_dir.png" border="1" /></p>
+
+            <p>Let's check that the directory really is there. It's hidden (remember the <code>attrib +h</code> string from earlier):
+            <img src="11_explorer_hidden_unpack_dir.png" border="1" /></p>
+
+            <p>And full contents can be seen under the directory itself.
+            <img src="12_explorer_unpack_dir_contents.png" border="1" /></p>
+
+            <p>Looking into Services under task manager, we can see that there's a service created with the same name as the hidden directory above.<br />
+            It's likely that this is for additional persistance in case the computer is rebooted.<br />
+            <img src="13_task_manager_service.png" border="1" /></p>
+
+            <p>Digging more into File operations of <code>tasksche.exe</code>, we can see it reading a file, creating a new file with a <code>.WNCRYT</code> extension, writing the file and setting its basic information.
+            <img src="14_procmon_taskche_fileop.png" border="1" /></p>
+
+            <p>There are also Registry operations we can look at with Procmon.<br />
+            Especially the PendingFileRenameOperations is interesting, showing the file name which being encrypted.
+            <img src="16_procmon_reg_op.png" border="1" /></p>
+
+            <h3>Network-based indicators</h3>
+            <p>Shortly after executing the malware, we can see in TcpView a massive amount of Syn Sent commands going to various IPs to port 445.<br />
+            The malware is trying to spread around the network by using the Eternal Blue exploit on computers that use an older SMB version.
+            <img src="15_tcpview_spread_eternal_blue.png" border="1" /></p>
+
+            <p>Spending a bit more time on TcpView we can also see <code>taskhsvc.exe</code> listening on port 9050.
+            <img src="08_tcpview_listener.png" border="1" /></p>
+
+            <h2>Advaced Static Analysis</h2>
+                <p>Next let's look into wannacry.exe with cutter. The basic overview shows us nicely a collection of information.
+                <img src="18_cutter_overview.png" border="1" /></p><br />
+                <p>In cutter, let's jump to main function and open graph view. From the top, we can see again a string reference to the URL with a long domain name which is pushed to stack to <code>esi</code> register.
+                From there an API call to <code>InternetOpenA</code> is prepared with multiple push instructions, following the call itself. Then another a call to <code>InternetOpenUrlA</code> is being marshalled before it's called.
+                For this API call <code>esi</code> is being passed an attribute, and we can see from the below graph that the URL string reference was moved to <code>esi</code> at the beginning of the main function.</p>
+                <p>At the end <code>edi</code> is tested against itself and a jump will follow if the value from that test is zero (Zero Flag is set to 1).
+                <img src="19_cutter_main.png" border="1" /><br /></p>
+
+                <p>We can see also from the decompiled code more clearly that result of <code>InternetOpenUrlA</code> is assigned to <code>eax</code>, which is assigned to <code>edi</code> and then tested against itself:<br />
+                <img src="20_2_cutter_main_decompile.png" border="1" /></p>
+
+                <h5>Why is this test (<code>test edi,edi</code>) so important?</h5>
+                <p>It's the killswitch of the malware. The malware executes only, if the URL above does not return anything to it (result is empty or URL is unreachable).</p>
+
+            <h2>Verifying the kill switch (advanced dynamic analysis)</h2>
+            <p>We can verify the kill switch we saw above in cutter by opening <code>wannacry.exe</code> with a debugger. In this case x32dbg was being used.</p>
+            <p>We already know the position of main function from cutter. For this example I copied the memory address where the URL string was moved to <code>esi</code> (memory location is <code>0040814A</code>).</p>
+            <p>We'll set our first breakpoint there to prevent the malware from executing any further during debugging. Looking more down in the debugger, we can see the same jump instruction (<code>jne</code>) after <code>test edi,edi</code> we saw in cutter's graph view earlier.
+            Let's put another breakpoint there and walk the program in debugger until we hit that breakpoint.
+            <img src="21_dbg_main_breakpoints_2.png" border="1" /></p>
+            <p>Once we've hit the breakpoint, let's take a look at our registers, pointers and flags. In this case Zero Flag (ZF) is what we want to manipulate.
+            With a ZF value of 0, the malware would execute normally (meaning that we didn't receive any response from that long URL). We can flip this to 1 in the debugger (meaning that the result of the test against <code>edi</code> was 0, i.e. we got a response from the long URL), and then continue running the malware normally from within the debugger. Nothing will happen in that case.<br />
+            <img src="22_dbg_jne_zf.png" border="1" /></p>
+            <h2>YARA rule</h2>
+            <p>This a simple YARA rule for detecting the original WannaCry ransomware. The conditions look for a portable executable magic byte at the beginning of the file and then for two of the strings, the long URL and tasksche.exe.</p>
+            <pre><code>rule WannaCry {
+            
+                meta:
+                    last_updated = &quot;2024-09-06&quot;
+                    author = &quot;sumikko&quot;
+                    description = &quot;A simple Yara rule for WannaCry&quot;
+            
+                strings:
+                    $url = &quot;http://www.iuqerfsodp9ifjaposdfjhgosurijfaewrwergwea.com&quot;
+                    $tasksche = &quot;tasksche.exe&quot;
+                    $PE_magic_byte = &quot;MZ&quot;
+            
+                condition:
+                    $PE_magic_byte at 0 and
+                    ($url and $tasksche)
+            }
+            </code></pre>
+
+        </div>
+    </div>
+  </div>
+
+<!-- End Document
+  –––––––––––––––––––––––––––––––––––––––––––––––––– -->
+</body>
+</html>
